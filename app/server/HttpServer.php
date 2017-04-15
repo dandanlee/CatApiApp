@@ -12,6 +12,7 @@ use base\Entrance;
 use base\framework\Route;
 use base\protocol\Request;
 use base\socket\BaseCallback;
+use base\socket\SwooleServer;
 use core\common\Globals;
 use core\component\cache\CacheLoader;
 use core\component\config\Config;
@@ -23,17 +24,25 @@ class HttpServer extends BaseCallback
     public function onWorkerStart($server, $workerId)
     {
         // 加载配置
-        Config::load(Entrance::$rootPath . '/config');
+        Config::load(Entrance::$configPath);
 
         // 初始化连接池
         PoolManager::getInstance()->init('mysql_master');
         PoolManager::getInstance()->init('redis_master');
+
+        /**
+         * 初始化内存缓存
+         */
+        $cache_config = Config::getField('component', 'cache');
+        CacheLoader::getInstance()->init(Entrance::$rootPath . $cache_config['cache_path'],
+            $cache_config['cache_path']);
     }
 
-    public function before_start()
+    public function beforeStart()
     {
         // 打开内存Cache进程
-        $this->open_cache_process(function(){
+        $this->openCacheProcess(function(){
+            Globals::$server = SwooleServer::getInstance()->getServer();
             Globals::setProcessName(Config::getField('project', 'project_name') . 'cache process');
             $cache_config = Config::getField('component', 'cache');
 
@@ -73,7 +82,15 @@ class HttpServer extends BaseCallback
         try {
             $result = yield Route::route($handle);
             $response->header('Content-Type', 'application/json');
-            $response->end(json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+            if( is_array($result) ) {
+                $result = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            } else if( !is_string($result) ) {
+                $response->status(503);
+                $response->end(var_export($result, true));
+                return;
+            }
+            $response->end($result);
         } catch ( \Exception $e ) {
             Log::ERROR('Exception', var_export($e, true));
             $response->status(502);
